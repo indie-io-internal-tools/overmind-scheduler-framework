@@ -1,0 +1,61 @@
+{% extends "base.html" %}
+{% block title %}Jobs{% endblock %}
+{% block content %}
+<section class="page-head">
+  <h1>Scheduled jobs</h1>
+  <p class="subtle">{{ jobs|length }} job{{ "" if jobs|length == 1 else "s" }} registered</p>
+</section>
+
+{% if jobs %}
+<ul class="job-list">
+  {% for entry in jobs %}
+    {% set job = entry.job %}
+    {% set last = entry.last %}
+    {% set recent = entry.recent %}
+    <li class="job-card status-{{ last.status if last else 'idle' }}">
+      <div class="job-row-1">
+        <a class="job-name" href="{{ base }}/jobs/{{ job.name }}">{{ job.name }}</a>
+        <span class="trigger" title="{{ job.cron if job.is_cron() else '' }}">
+          {{ job.schedule_human() }}
+        </span>
+        <span class="last-run">
+          {% if last %}
+            <span class="status-pill status-{{ last.status }}">{{ last.status }}</span>
+            <span class="when" title="{{ last.started_at }}">{{ last.started_at | humanize }}</span>
+          {% else %}
+            <span class="subtle">no runs yet</span>
+          {% endif %}
+        </span>
+      </div>
+
+      <div class="job-row-2">
+        <p class="desc">{{ job.description or "—" }}</p>
+        <div class="actions">
+          <span class="dots">
+            {% for r in recent[:10] %}
+              <span class="run-dot run-{{ r.status }}" title="{{ r.started_at }} — {{ r.status }}"></span>
+            {% endfor %}
+            {% for _ in range(10 - recent|length) %}<span class="run-dot run-empty"></span>{% endfor %}
+          </span>
+          {% if job.is_cron() and job.enabled %}
+            <form method="post" action="{{ base }}/jobs/{{ job.name }}/run" style="display:inline">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+              <button type="submit">Run now</button>
+            </form>
+          {% endif %}
+          <form method="post" action="{{ base }}/jobs/{{ job.name }}/toggle" style="display:inline; margin-left: auto">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <button type="submit" class="toggle {{ 'is-on' if job.enabled else 'is-off' }}" title="Click to {{ 'disable' if job.enabled else 'enable' }}">
+              <span class="toggle-track"><span class="toggle-knob"></span></span>
+              <span class="toggle-text">{{ "Enabled" if job.enabled else "Disabled" }}</span>
+            </button>
+          </form>
+        </div>
+      </div>
+    </li>
+  {% endfor %}
+</ul>
+{% else %}
+<p class="subtle">No jobs registered. Drop a Python file under <code>jobs/</code> with a top-level <code>JOB</code> dict and a <code>run()</code> or <code>handle_webhook()</code> function.</p>
+{% endif %}
+{% endblock %}

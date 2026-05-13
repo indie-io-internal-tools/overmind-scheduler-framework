@@ -1,0 +1,34 @@
+{% extends "base.html" %}
+{% block title %}run #{{ run.id }} — {{ job.name }}{% endblock %}
+{% block content %}
+<p><a class="crumb" href="{{ base }}/jobs/{{ job.name }}">← {{ job.name }}</a></p>
+
+<section class="page-head">
+  <h1>Run #{{ run.id }}</h1>
+  <p class="subtle">{{ job.name }} — <span class="status-pill status-{{ run.status }}">{{ run.status }}</span></p>
+</section>
+
+<section class="meta-grid">
+  <div><span class="label">Started</span><span title="{{ run.started_at }}">{{ run.started_at | humanize }}</span></div>
+  <div><span class="label">Ended</span><span title="{{ run.ended_at or '' }}">{{ run.ended_at | humanize if run.ended_at else "—" }}</span></div>
+  <div><span class="label">Duration</span><span>{{ "%dms"|format(run.duration_ms) if run.duration_ms is not none else "—" }}</span></div>
+  <div><span class="label">Trigger</span><span>{{ run.trigger_kind }}</span></div>
+</section>
+
+{% if run.error_message %}
+<section>
+  <h2>Error</h2>
+  <pre class="err">{{ run.error_message }}</pre>
+</section>
+{% endif %}
+
+<section>
+  <h2>stdout</h2>
+  <pre class="out">{{ run.stdout or "(empty)" }}</pre>
+</section>
+
+<section>
+  <h2>stderr</h2>
+  <pre class="err">{{ run.stderr or "(empty)" }}</pre>
+</section>
+{% endblock %}

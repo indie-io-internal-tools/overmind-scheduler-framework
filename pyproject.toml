@@ -1,0 +1,37 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "indie-scheduler"
+version = "1.0.0"
+description = "Self-hosted job scheduler framework for indie.io team boxes — webhook + cron, FastAPI + APScheduler + SQLite + PM2."
+readme = "README.md"
+requires-python = ">=3.11"
+authors = [{ name = "indie.io Operations", email = "jordan@indie.io" }]
+license = { text = "Proprietary" }
+dependencies = [
+    "fastapi>=0.115,<1",
+    "uvicorn[standard]>=0.34,<1",
+    "apscheduler>=3.10,<4",
+    "jinja2>=3.1,<4",
+    "python-multipart>=0.0.20,<1",
+    "python-dotenv>=1.0,<2",
+    "httpx>=0.28,<1",
+    "cron-descriptor>=1.4,<2",
+]
+
+[project.urls]
+Repository = "https://github.com/indie-io-internal-tools/overmind-scheduler-framework"
+
+[project.scripts]
+# Entry point each team's box runs via PM2. Equivalent to
+# `python -m indie_scheduler.serve`. Reads jobs/ from CWD.
+indie-scheduler-serve = "indie_scheduler.serve:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+# Ship Jinja templates + static assets with the wheel.
+indie_scheduler = ["app/templates/*.html", "app/static/*"]

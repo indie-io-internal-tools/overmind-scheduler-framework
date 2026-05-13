@@ -1,0 +1,12 @@
+{% extends "base.html" %}
+{% block title %}{{ job.name }} — source{% endblock %}
+{% block content %}
+<p><a class="crumb" href="{{ base }}/jobs/{{ job.name }}">← {{ job.name }}</a></p>
+
+<section class="page-head">
+  <h1>{{ job.name }} — source</h1>
+  <p class="subtle"><code>jobs/{{ job.module_path.name }}</code></p>
+</section>
+
+<pre class="source"><code>{{ source }}</code></pre>
+{% endblock %}

@@ -1,0 +1,67 @@
+{% extends "base.html" %}
+{% block title %}{{ job.name }}{% endblock %}
+{% block content %}
+<p><a class="crumb" href="{{ base }}/">← all jobs</a></p>
+
+<section class="page-head">
+  <h1>{{ job.name }}</h1>
+  <p class="subtle">{{ job.description or "—" }}</p>
+</section>
+
+<section class="meta-grid">
+  <div>
+    <span class="label">Schedule</span>
+    <span>{{ job.schedule_human() }}</span>
+    {% if job.is_cron() %}<div class="cron-raw"><code>{{ job.cron }}</code></div>{% endif %}
+  </div>
+  <div><span class="label">Owner</span><span>{{ job.owner }}</span></div>
+  <div><span class="label">Enabled</span><span>{{ "yes" if job.enabled else "no" }}</span></div>
+  <div><span class="label">Module</span><span><code>{{ job.module_path.name }}</code></span></div>
+</section>
+
+<div class="action-bar">
+  <a class="button-link" href="{{ base }}/jobs/{{ job.name }}/source">View source</a>
+  {% if job.is_cron() and job.enabled %}
+    <form method="post" action="{{ base }}/jobs/{{ job.name }}/run" style="display:inline">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <button type="submit">Run now</button>
+    </form>
+  {% endif %}
+  <form method="post" action="{{ base }}/jobs/{{ job.name }}/toggle" style="display:inline; margin-left: auto">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <button type="submit" class="toggle {{ 'is-on' if job.enabled else 'is-off' }}" title="Click to {{ 'disable' if job.enabled else 'enable' }}">
+      <span class="toggle-track"><span class="toggle-knob"></span></span>
+      <span class="toggle-text">{{ "Enabled" if job.enabled else "Disabled" }}</span>
+    </button>
+  </form>
+  {% if job.enabled != job.enabled_default %}
+    <form method="post" action="{{ base }}/jobs/{{ job.name }}/reset-enabled" style="display:inline">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <button type="submit" class="button-link" title="Drop the toggle override and revert to the JOB-dict default ({{ 'enabled' if job.enabled_default else 'disabled' }})">Reset to default</button>
+    </form>
+  {% endif %}
+</div>
+
+<section class="page-head">
+  <h2>Recent runs</h2>
+</section>
+
+{% if runs %}
+<table class="runs">
+  <thead><tr><th>Started</th><th>Status</th><th>Duration</th><th>Trigger</th><th></th></tr></thead>
+  <tbody>
+    {% for r in runs %}
+      <tr class="row-{{ r.status }}">
+        <td title="{{ r.started_at }}">{{ r.started_at | humanize }}</td>
+        <td><span class="status-pill status-{{ r.status }}">{{ r.status }}</span></td>
+        <td>{{ "%dms"|format(r.duration_ms) if r.duration_ms is not none else "—" }}</td>
+        <td>{{ r.trigger_kind }}</td>
+        <td><a href="{{ base }}/jobs/{{ job.name }}/runs/{{ r.id }}">view</a></td>
+      </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<p class="subtle">No runs yet.</p>
+{% endif %}
+{% endblock %}
