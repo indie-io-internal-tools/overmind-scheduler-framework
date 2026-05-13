@@ -5,4 +5,4 @@ Job authors generally only need:
     from indie_scheduler.helpers import retry_with_backoff
 """
 
-__version__ = "1.0.0"
+__version__ = "1.1.0"
