@@ -280,6 +280,10 @@ app = FastAPI(
 app.mount("/static", StaticFiles(directory=str(config.STATIC_DIR)), name="static")
 templates = Jinja2Templates(directory=str(config.TEMPLATES_DIR))
 templates.env.filters["humanize"] = humanize_iso
+# Inject team context into every template render so the banner/title adapt
+# per-box without having to thread these through every endpoint.
+templates.env.globals["team_display"] = config.TEAM_NAME.capitalize() if config.TEAM_NAME.islower() else config.TEAM_NAME
+templates.env.globals["team_home"] = config.TEAM_HOME_URL
 
 
 _CSRF_COOKIE = "scheduler_csrf"

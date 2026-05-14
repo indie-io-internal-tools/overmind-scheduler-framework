@@ -43,6 +43,26 @@ DB_PATH = Path(os.environ.get("SCHEDULER_DB_PATH", str(DATA_DIR / "runs.db")))
 
 PORT = int(os.environ.get("SCHEDULER_PORT", "3014"))
 BASE_PATH = os.environ.get("SCHEDULER_BASE_PATH", "").rstrip("/")
+
+
+def _derive_team() -> tuple[str, str]:
+    """Derive (team_slug, team_home_url) from BASE_PATH.
+
+    BASE_PATH "/marketing/scheduler" -> ("marketing", "/marketing/").
+    BASE_PATH "/operations/scheduler" -> ("operations", "/operations/").
+    BASE_PATH "" -> ("", "/").
+
+    Override either via SCHEDULER_TEAM_NAME / SCHEDULER_TEAM_HOME.
+    """
+    parts = [p for p in BASE_PATH.split("/") if p]
+    slug = parts[0] if parts else ""
+    home = f"/{slug}/" if slug else "/"
+    return slug, home
+
+
+_default_slug, _default_home = _derive_team()
+TEAM_NAME = os.environ.get("SCHEDULER_TEAM_NAME", _default_slug or "Operations")
+TEAM_HOME_URL = os.environ.get("SCHEDULER_TEAM_HOME", _default_home)
 SLACK_BOT_TOKEN = os.environ.get("SLACK_BOT_TOKEN", "").strip()
 SLACK_FAILURE_CHANNEL = os.environ.get("SLACK_FAILURE_CHANNEL", "").strip()
 

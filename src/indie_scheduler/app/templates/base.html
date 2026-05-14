@@ -3,15 +3,15 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>{% block title %}Scheduler{% endblock %} — Overmind Operations</title>
+  <title>{% block title %}Scheduler{% endblock %} — {{ team_display }}</title>
   <link rel="stylesheet" href="{{ base }}/static/style.css" />
 </head>
 <body>
   <header class="banner">
-    <a href="/operations/" class="banner-link">
+    <a href="{{ team_home }}" class="banner-link">
       <span class="banner-up">←</span>
       <span class="banner-title">Scheduler</span>
-      <span class="banner-sub">Operations</span>
+      <span class="banner-sub">{{ team_display }}</span>
     </a>
   </header>
   <main>
