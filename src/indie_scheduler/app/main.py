@@ -310,6 +310,125 @@ def _check_csrf(request: Request, form_token: Optional[str]) -> bool:
     return _hmac.compare_digest(cookie_token, form_token)
 
 
+def _check_tracker_secret(request: Request) -> Optional[JSONResponse]:
+    """Validate the X-Scheduler-Secret header for tracker endpoints.
+    Returns a JSONResponse on failure, None on success."""
+    import hmac as _hmac
+    import os as _os
+    expected = _os.environ.get("SCHEDULER_WEBHOOK_SECRET", "").strip()
+    if not expected:
+        return JSONResponse(
+            {"error": "SCHEDULER_WEBHOOK_SECRET not configured on this box"},
+            status_code=503,
+        )
+    provided = request.headers.get("x-scheduler-secret", "")
+    if not _hmac.compare_digest(provided, expected):
+        return JSONResponse({"error": "invalid secret"}, status_code=403)
+    return None
+
+
+@app.post("/api/register/{job_name}")
+async def register_external(job_name: str, request: Request):
+    """Register or refresh an external job. Idempotent.
+
+    Tools call this on startup (or lazily on first invocation of a wrapped
+    job) to advertise that they have a scheduled job. The framework never
+    fires the declared cron — it's display metadata only.
+    """
+    err = _check_tracker_secret(request)
+    if err is not None:
+        return err
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "invalid json body"}, status_code=400)
+    if not isinstance(body, dict):
+        return JSONResponse({"error": "body must be a JSON object"}, status_code=400)
+
+    # Force name to come from URL — body's name is ignored to keep URL canonical.
+    body["name"] = job_name
+    try:
+        db.upsert_external_job(body)
+    except Exception as e:
+        return JSONResponse({"error": f"persist failed: {e}"}, status_code=500)
+
+    # Refresh in-memory registry so the job appears immediately in /jobs UI.
+    try:
+        registry.load()
+    except Exception as e:
+        print(f"[register] registry refresh failed: {e}")
+
+    return JSONResponse({"ok": True, "name": job_name})
+
+
+@app.post("/api/heartbeat/{job_name}")
+async def heartbeat(job_name: str, request: Request):
+    """Record a finalized run from an external tracker.
+
+    Expected body:
+      { "status": "success"|"error", "duration_ms": int,
+        "start_ts": "ISO8601"?, "end_ts": "ISO8601"?,
+        "error_message": "..."?, "summary": "..."?,
+        "tracker_version": "1.0.0" }
+
+    The job must already be registered (via /api/register/<name>) for the
+    heartbeat to land. Unregistered heartbeats return 404 — we won't auto-
+    create on first heartbeat because the registration carries the metadata
+    (cron, owner, url) we need for the UI.
+    """
+    err = _check_tracker_secret(request)
+    if err is not None:
+        return err
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+
+    # Ensure the job is registered.
+    existing = registry.get(job_name)
+    if existing is None or not existing.is_external():
+        return JSONResponse(
+            {"error": f"unknown external job {job_name!r}; register first via POST /api/register/{job_name}"},
+            status_code=404,
+        )
+
+    status = body.get("status") or "success"
+    if status not in ("success", "error"):
+        status = "error" if body.get("error_message") else "success"
+    if status == "success":
+        status = "success"
+    else:
+        status = "failed"
+
+    run_id = db.insert_heartbeat_run(
+        job_name,
+        status=status,
+        duration_ms=body.get("duration_ms"),
+        started_at=body.get("start_ts"),
+        ended_at=body.get("end_ts"),
+        error_message=body.get("error_message"),
+        summary=body.get("summary"),
+    )
+
+    if status == "failed":
+        try:
+            await notifier_post_failure_async(
+                job_name, run_id,
+                body.get("error_message") or "(no error message)",
+            )
+        except Exception as e:
+            print(f"[heartbeat] notify failed: {e}")
+
+    return JSONResponse({"ok": True, "run_id": run_id})
+
+
+async def notifier_post_failure_async(job_name: str, run_id: int, msg: str) -> None:
+    """Thin wrapper to avoid a top-level import that would crash if notifier
+    fails to import for some reason."""
+    from . import notifier
+    await notifier.post_failure_async(job_name, run_id, msg)
+
+
 @app.get("/api/health")
 def health():
     """Liveness + dependency check. Returns 503 if any dependency is unhealthy
@@ -410,6 +529,14 @@ def job_source(request: Request, job_name: str):
     job = registry.get(job_name)
     if job is None:
         return HTMLResponse(f"Unknown job: {job_name}", status_code=404)
+    if job.module_path is None:
+        # External jobs don't have source in this repo — direct readers to the tool.
+        return HTMLResponse(
+            f"<p>{job_name} is an externally-registered job — the source lives in the tool itself"
+            + (f" (<a href='{job.external_url}'>{job.external_url}</a>)." if job.external_url else ".")
+            + "</p>",
+            status_code=200,
+        )
     try:
         source = job.module_path.read_text(encoding="utf-8")
     except OSError as e:

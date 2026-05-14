@@ -1,0 +1,19 @@
+{
+  "name": "indie-scheduler-tracker",
+  "version": "1.0.0",
+  "description": "Lightweight tracker for power-user tools that keep their own scheduling but want central inventory + heartbeats in the indie.io scheduler.",
+  "main": "index.js",
+  "types": "index.d.ts",
+  "files": ["index.js", "index.d.ts", "README.md"],
+  "scripts": {
+    "build": "tsc"
+  },
+  "devDependencies": {
+    "typescript": "^5.0.0"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "license": "UNLICENSED",
+  "private": true
+}

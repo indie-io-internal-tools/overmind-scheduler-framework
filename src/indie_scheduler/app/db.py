@@ -29,6 +29,22 @@ CREATE TABLE IF NOT EXISTS job_settings (
     enabled INTEGER NOT NULL,
     updated_at TEXT NOT NULL
 );
+
+-- External jobs are registered at runtime via POST /api/register/<name>.
+-- Persisted so they survive scheduler restart. The `cron` column is
+-- tracker-reported metadata only — framework never fires it.
+CREATE TABLE IF NOT EXISTS external_jobs (
+    name TEXT PRIMARY KEY,
+    tool TEXT,
+    cron TEXT,
+    timezone TEXT,
+    url TEXT,
+    owner TEXT,
+    description TEXT,
+    tracker_version TEXT,
+    first_seen_at TEXT NOT NULL,
+    last_registered_at TEXT NOT NULL
+);
 """
 
 
@@ -243,3 +259,86 @@ def get_run(run_id: int) -> Optional[dict]:
         cur = c.execute("SELECT * FROM runs WHERE id = ?", (run_id,))
         row = cur.fetchone()
         return dict(row) if row else None
+
+
+# ── External jobs ──────────────────────────────────────────────────────────
+def upsert_external_job(payload: dict) -> None:
+    """Register or refresh an external job. Schema is append-only: future
+    versions of the framework may add columns, but the existing column
+    semantics never change. Unknown payload keys are dropped silently."""
+    name = payload.get("name")
+    if not name:
+        return
+    now = now_iso()
+    with conn() as c:
+        cur = c.execute("SELECT first_seen_at FROM external_jobs WHERE name = ?", (name,))
+        existing = cur.fetchone()
+        first_seen = existing["first_seen_at"] if existing else now
+        c.execute(
+            "INSERT INTO external_jobs "
+            "(name, tool, cron, timezone, url, owner, description, "
+            " tracker_version, first_seen_at, last_registered_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+            "ON CONFLICT(name) DO UPDATE SET "
+            "  tool = excluded.tool, "
+            "  cron = excluded.cron, "
+            "  timezone = excluded.timezone, "
+            "  url = excluded.url, "
+            "  owner = excluded.owner, "
+            "  description = excluded.description, "
+            "  tracker_version = excluded.tracker_version, "
+            "  last_registered_at = excluded.last_registered_at",
+            (
+                name,
+                payload.get("tool"),
+                payload.get("cron"),
+                payload.get("timezone"),
+                payload.get("url"),
+                payload.get("owner"),
+                payload.get("description"),
+                payload.get("tracker_version"),
+                first_seen,
+                now,
+            ),
+        )
+
+
+def list_external_jobs() -> list[dict]:
+    with conn() as c:
+        cur = c.execute("SELECT * FROM external_jobs ORDER BY name")
+        return [dict(r) for r in cur.fetchall()]
+
+
+def insert_heartbeat_run(
+    job_name: str,
+    *,
+    status: str,
+    duration_ms: Optional[int],
+    started_at: Optional[str],
+    ended_at: Optional[str],
+    error_message: Optional[str],
+    summary: Optional[str],
+) -> int:
+    """Insert a finalized run row from an external heartbeat. Unlike
+    cron/webhook runs (which insert as 'running' then update), heartbeat
+    runs land already-completed — the work happened in the tool, not here."""
+    started = started_at or now_iso()
+    ended = ended_at or now_iso()
+    with conn() as c:
+        cur = c.execute(
+            "INSERT INTO runs (job_name, trigger_kind, started_at, ended_at, "
+            " status, duration_ms, stdout, stderr, error_message) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                job_name,
+                "external",
+                started,
+                ended,
+                status,
+                duration_ms,
+                _truncate(_redact(summary)) if summary else None,
+                None,
+                _truncate(_redact(error_message)) if error_message else None,
+            ),
+        )
+        return cur.lastrowid

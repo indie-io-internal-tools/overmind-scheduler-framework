@@ -9,10 +9,17 @@ You are about to write or modify a job for the indie.io scheduler. This file is 
 
 ## The mental model
 
-- One job = one Python file in `jobs/<snake_case>.py`.
-- The file declares a top-level `JOB` dict (config) and either a `run(ctx)` function (cron) or an `async handle_webhook(request)` function (webhook).
-- The framework discovers files in `jobs/` at startup, schedules cron jobs, and routes incoming webhook POSTs to `/<team>/scheduler/webhooks/<job_name>`.
-- All run state (stdout, stderr, status, duration) is captured to a SQLite DB and viewable in the `/jobs/<name>` UI.
+The scheduler is two products, opted into independently:
+
+1. **Scheduling engine** — write a `JOB` dict + `run(ctx)` in a Python file under `jobs/`. The framework owns the schedule, runs the job, captures output, surfaces it in the UI. This is the default. Use when you don't have your own scheduling.
+
+2. **Scheduling registry** — keep your own scheduling (in another tool, in node-cron, in any other runner). Register the fact that something is scheduled and post heartbeats when it runs. The framework tracks it, surfaces it in the central inventory. **The framework never fires the schedule and never alerts on missed fires.** Use when your tool already has its own runner and you want central visibility without migrating.
+
+For the engine: one job = one Python file in `jobs/<snake_case>.py`. The file declares a top-level `JOB` dict (config) and either a `run(ctx)` function (cron) or an `async handle_webhook(request)` function (webhook).
+
+For the registry: the tool uses the `indie-scheduler-tracker` library (Python or TypeScript) to wrap its existing callbacks. The wrapper handles registration + heartbeats on a fire-and-forget basis.
+
+All run state (stdout, stderr, status, duration) for engine-managed jobs, plus heartbeat results for registry jobs, is captured to a SQLite DB and viewable in the `/jobs/<name>` UI.
 
 ## File layout in a team box
 
@@ -254,6 +261,71 @@ Common issues and fixes:
 - [ ] Job uses `ctx["log"]` (or `print()`) — both flow to the run detail page
 - [ ] Job has been run locally at least once and didn't explode
 - [ ] If migrating from n8n: the original n8n workflow is disabled before this ships, not both running in parallel
+
+## Registry mode — using the tracker library
+
+If your tool already has its own scheduling and you don't want to migrate, use the tracker. One import + one wrap per job.
+
+### Python
+
+```python
+from indie_scheduler.tracker import tracked
+
+@tracked(
+    name="my_existing_job",
+    tool="my-tool",
+    cron="0 9 * * mon-fri",           # display only — framework never fires this
+    timezone="America/New_York",
+    url="https://overmind.indie.io/<team>/my-tool/",
+    owner="you@indie.io",
+    description="What this does",
+)
+def my_existing_job():
+    # your existing code, unchanged
+    ...
+```
+
+### TypeScript / Node
+
+```typescript
+import { tracked } from "indie-scheduler-tracker";
+import cron from "node-cron";
+
+const myJob = tracked(
+  {
+    name: "my_existing_job",
+    tool: "my-tool",
+    cron: "0 9 * * mon-fri",
+    timezone: "America/New_York",
+    url: "https://overmind.indie.io/<team>/my-tool/",
+  },
+  async () => {
+    // your existing code, unchanged
+  }
+);
+
+cron.schedule("0 9 * * mon-fri", myJob);
+```
+
+### Tracker env vars (in your tool's .env)
+
+```
+SCHEDULER_REGISTRY_URL=https://overmind.indie.io/<team>/scheduler
+SCHEDULER_HEARTBEAT_SECRET=<must match the team scheduler's SCHEDULER_WEBHOOK_SECRET>
+```
+
+If either is unset, the tracker silently no-ops. Wrapped job still runs.
+
+### Tracker invariants
+
+- **Never throws.** Telemetry failure is invisible.
+- **Never blocks.** Heartbeats fire-and-forget in a background thread/promise.
+- **No import-time side effects.** First network call is on first wrapped invocation.
+- **Cron field is metadata only.** Framework never fires the schedule, never alerts on missed fires.
+
+### Missed-fire alerting
+
+The registry **does not** detect when an expected fire didn't happen — the framework doesn't know your real schedule. If you need missed-fire alerting, either keep it in the tool (where it already lives), or migrate to engine mode (`trigger: "cron"`) where the framework owns the schedule and can alert on missed fires.
 
 ## What to NOT do
 

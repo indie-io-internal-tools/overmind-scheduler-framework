@@ -26,11 +26,11 @@ class Job:
     name: str
     description: str
     owner: str
-    trigger: str  # "cron" | "webhook"
+    trigger: str  # "cron" | "webhook" | "external"
     cron: Optional[str]
     enabled_default: bool  # from the JOB dict in the .py file
     enabled: bool          # effective state — override if present, else default
-    module_path: Path
+    module_path: Optional[Path]
     run: Optional[Callable]
     handle_webhook: Optional[Callable]
     # Optional knobs from the JOB dict.
@@ -41,6 +41,14 @@ class Job:
     # (framework checks X-Scheduler-Secret header), "open" (explicit no-auth).
     # Required for webhook jobs — missing means framework refuses to dispatch.
     webhook_auth: Optional[str] = None
+    # External-trigger fields. Populated when a tool registers via
+    # POST /api/register/<name>. Framework treats the cron field as display
+    # metadata only — never fires it, never alerts off missed fires.
+    tool: Optional[str] = None
+    external_url: Optional[str] = None
+    timezone: Optional[str] = None
+    tracker_version: Optional[str] = None
+    last_registered_at: Optional[str] = None
 
     def is_cron(self) -> bool:
         return self.trigger == "cron"
@@ -48,10 +56,18 @@ class Job:
     def is_webhook(self) -> bool:
         return self.trigger == "webhook"
 
+    def is_external(self) -> bool:
+        return self.trigger == "external"
+
     def schedule_human(self) -> str:
-        """Human-readable schedule for the UI. Webhook jobs say 'on webhook'."""
+        """Human-readable schedule for the UI."""
         if self.is_webhook():
             return "on webhook"
+        if self.is_external() and self.cron:
+            try:
+                return f"{get_description(self.cron)} (self-managed)"
+            except Exception:
+                return f"{self.cron} (self-managed)"
         if not self.cron:
             return "(no schedule)"
         try:
@@ -76,65 +92,98 @@ def _import_module(path: Path):
 
 def load() -> dict[str, Job]:
     _registry.clear()
-    if not config.JOBS_DIR.exists():
-        return _registry
+    # File-based jobs (cron + webhook). These live in jobs/*.py.
+    if config.JOBS_DIR.exists():
+        for path in sorted(config.JOBS_DIR.glob("*.py")):
+            if path.name.startswith("_"):
+                continue
+            try:
+                module = _import_module(path)
+            except Exception as e:
+                print(f"[registry] failed to load {path.name}: {e}")
+                continue
+            _load_one_file(path, module)
 
-    for path in sorted(config.JOBS_DIR.glob("*.py")):
-        if path.name.startswith("_"):
-            continue
-        try:
-            module = _import_module(path)
-        except Exception as e:
-            print(f"[registry] failed to load {path.name}: {e}")
-            continue
+    # External jobs (registered at runtime via POST /api/register/<name>).
+    # These survive restart because they're persisted in external_jobs.
+    try:
+        for row in db.list_external_jobs():
+            name = row["name"]
+            override = db.get_enabled_override(name)
+            effective = True if override is None else override
+            _registry[name] = Job(
+                name=name,
+                description=row.get("description") or "",
+                owner=row.get("owner") or "unknown",
+                trigger="external",
+                cron=row.get("cron"),
+                enabled_default=True,
+                enabled=effective,
+                module_path=None,
+                run=None,
+                handle_webhook=None,
+                tool=row.get("tool"),
+                external_url=row.get("url"),
+                timezone=row.get("timezone"),
+                tracker_version=row.get("tracker_version"),
+                last_registered_at=row.get("last_registered_at"),
+            )
+    except Exception as e:
+        print(f"[registry] failed to load external jobs: {e}")
 
-        meta = getattr(module, "JOB", None)
-        if not isinstance(meta, dict):
-            continue
-        name = meta.get("name") or path.stem
-        trigger = meta.get("trigger", "cron")
-        if trigger not in ("cron", "webhook"):
-            print(f"[registry] {name}: invalid trigger {trigger!r}, skipping")
-            continue
-
-        run_fn = getattr(module, "run", None)
-        webhook_fn = getattr(module, "handle_webhook", None)
-
-        if trigger == "cron" and run_fn is None:
-            print(f"[registry] {name}: cron job missing run(); skipping")
-            continue
-        if trigger == "webhook" and webhook_fn is None:
-            print(f"[registry] {name}: webhook job missing handle_webhook(); skipping")
-            continue
-
-        default_enabled = bool(meta.get("enabled", True))
-        override = db.get_enabled_override(name)
-        effective = default_enabled if override is None else override
-
-        _registry[name] = Job(
-            name=name,
-            description=meta.get("description", ""),
-            owner=meta.get("owner", "unknown"),
-            trigger=trigger,
-            cron=meta.get("cron"),
-            enabled_default=default_enabled,
-            enabled=effective,
-            module_path=path,
-            run=run_fn,
-            handle_webhook=webhook_fn,
-            misfire_grace_seconds=meta.get("misfire_grace_seconds"),
-            max_instances=int(meta.get("max_instances", 1)),
-            timeout_seconds=meta.get("timeout_seconds"),
-            webhook_auth=meta.get("auth"),
-        )
-        if trigger == "webhook":
-            mode = meta.get("auth")
-            if mode not in {"internal", "shared_secret", "open"}:
-                print(
-                    f"[registry] {name}: webhook job missing required JOB['auth'] "
-                    f"(got {mode!r}). Set to 'internal', 'shared_secret', or 'open'."
-                )
     return _registry
+
+
+def _load_one_file(path: Path, module) -> None:
+    """Extract Job from a loaded module's top-level JOB dict."""
+    meta = getattr(module, "JOB", None)
+    if not isinstance(meta, dict):
+        return
+    name = meta.get("name") or path.stem
+    trigger = meta.get("trigger", "cron")
+    if trigger not in ("cron", "webhook"):
+        print(f"[registry] {name}: invalid trigger {trigger!r}; "
+              "file-based jobs must be 'cron' or 'webhook'. "
+              "Use POST /api/register/<name> for external registrations.")
+        return
+
+    run_fn = getattr(module, "run", None)
+    webhook_fn = getattr(module, "handle_webhook", None)
+
+    if trigger == "cron" and run_fn is None:
+        print(f"[registry] {name}: cron job missing run(); skipping")
+        return
+    if trigger == "webhook" and webhook_fn is None:
+        print(f"[registry] {name}: webhook job missing handle_webhook(); skipping")
+        return
+
+    default_enabled = bool(meta.get("enabled", True))
+    override = db.get_enabled_override(name)
+    effective = default_enabled if override is None else override
+
+    _registry[name] = Job(
+        name=name,
+        description=meta.get("description", ""),
+        owner=meta.get("owner", "unknown"),
+        trigger=trigger,
+        cron=meta.get("cron"),
+        enabled_default=default_enabled,
+        enabled=effective,
+        module_path=path,
+        run=run_fn,
+        handle_webhook=webhook_fn,
+        misfire_grace_seconds=meta.get("misfire_grace_seconds"),
+        max_instances=int(meta.get("max_instances", 1)),
+        timeout_seconds=meta.get("timeout_seconds"),
+        webhook_auth=meta.get("auth"),
+    )
+    if trigger == "webhook":
+        mode = meta.get("auth")
+        if mode not in {"internal", "shared_secret", "open"}:
+            print(
+                f"[registry] {name}: webhook job missing required JOB['auth'] "
+                f"(got {mode!r}). Set to 'internal', 'shared_secret', or 'open'."
+            )
 
 
 def get(name: str) -> Optional[Job]:
